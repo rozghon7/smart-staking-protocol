@@ -5,6 +5,7 @@ import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import "../src/IActivityTracker.sol";
 
 /// @title Gas-effective Staking Contract.
 /// @author rozghon7.
@@ -12,6 +13,8 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 contract Staking is Ownable, ReentrancyGuard {
     /// @notice SafeERC20 is used to avoid reentrancy attacks.
     using SafeERC20 for IERC20;
+
+    IActivityTracker public activityTrackerContract;
 
     /// @notice Tokens that are being staked.
     IERC20 public stakingToken;
@@ -57,24 +60,28 @@ contract Staking is Ownable, ReentrancyGuard {
     /// @notice Reverts if the amount to deposit is zero.
     error DepositAmountMustBeGraterThenZero();
 
+    error ActivityTrackerContractCantBeZeroAddress();
+
+    error CallerIsNotStaker();
+
     /// @notice Emitted when a user stakes tokens.
-    /// @param user The address of the user who staked the tokens.
-    /// @param amount The amount of tokens that were staked.
-    event NewStaking(address indexed user, uint256 indexed amount);
+    /// @param _user The address of the user who staked the tokens.
+    /// @param _amount The amount of tokens that were staked.
+    event NewStaking(address indexed _user, uint256 indexed _amount);
     /// @notice Emitted when a user unstakes tokens.
-    /// @param user The address of the user who unstaked the tokens.
-    /// @param amount The amount of tokens that were unstaked.
-    event NewUnstaking(address indexed user, uint256 indexed amount);
+    /// @param _user The address of the user who unstaked the tokens.
+    /// @param _amount The amount of tokens that were unstaked.
+    event NewUnstaking(address indexed _user, uint256 indexed _amount);
     /// @notice Emitted when a user claims rewards.
-    /// @param user The address of the user who claimed the rewards.
-    /// @param amount The amount of tokens that were claimed.
-    event RewardsClaimed(address indexed user, uint256 indexed amount);
+    /// @param _user The address of the user who claimed the rewards.
+    /// @param _amount The amount of tokens that were claimed.
+    event RewardsClaimed(address indexed _user, uint256 indexed _amount);
     /// @notice Emitted when the APR is updated.
-    /// @param newAPR The new APR.
-    event APRUpdated(uint256 indexed newAPR);
+    /// @param _newAPR The new APR.
+    event APRUpdated(uint256 indexed _newAPR);
     /// @notice Emitted when new reward tokens are deposited.
-    /// @param amount The amount of tokens that were deposited.
-    event NewRewardTokensFunding(uint256 indexed amount);
+    /// @param _amount The amount of tokens that were deposited.
+    event NewRewardTokensFunding(uint256 indexed _amount);
 
     /// @notice Mapping of user addresses to their staked balances.
     mapping(address => uint256) public stakedBalances;
@@ -83,17 +90,21 @@ contract Staking is Ownable, ReentrancyGuard {
     /// @notice Mapping of user addresses to their available reward tokens to claim.
     mapping(address => uint256) public rewards;
 
+    mapping(address => uint256) public lastBonusUpdate;
+
     /// @notice Initializes the contract with the staking and reward tokens and the reward APR.
     /// @param _stakingToken The address of the staking token.
     /// @param _rewardToken The address of the reward token.
     /// @param _rewardAPR The reward APR.
-    constructor(address _stakingToken, address _rewardToken, uint256 _rewardAPR) Ownable(msg.sender) {
+    constructor(address _stakingToken, address _rewardToken, uint256 _rewardAPR, address _activityTrackerContract) Ownable(msg.sender) {
+        if (_activityTrackerContract == address(0)) revert ActivityTrackerContractCantBeZeroAddress();
         if (_stakingToken == address(0) || _rewardToken == address(0)) revert TokenCantBeZeroAddress();
         if (_stakingToken == _rewardToken) revert StakingAndRewardTokensMustBeDifferent();
         if (_rewardAPR == 0) revert RewardAPRMustBeGraterThenZero();
 
         stakingToken = IERC20(_stakingToken);
         rewardToken = IERC20(_rewardToken);
+        activityTrackerContract = IActivityTracker(_activityTrackerContract);
         rewardAPR = _rewardAPR;
         lastUpdateTime = block.timestamp;
     }
@@ -113,67 +124,72 @@ contract Staking is Ownable, ReentrancyGuard {
     }
 
     /// @notice Internal function that updates the user's rewards.
-    /// @param user The address of the user whose rewards are to be updated.
-    function updateUserRewards(address user) internal {
+    /// @param _user The address of the user whose rewards are to be updated.
+    function updateUserRewards(address _user) internal {
         uint256 newRewards =
-            (stakedBalances[user] * (rewardPerTokenIndexStored - userRewardPerTokenPaid[user])) / PRECISION_FACTOR;
+            (stakedBalances[_user] * (rewardPerTokenIndexStored - userRewardPerTokenPaid[_user])) / PRECISION_FACTOR;
 
-        rewards[user] += newRewards;
-        userRewardPerTokenPaid[user] = rewardPerTokenIndexStored;
+        rewards[_user] += newRewards;
+        userRewardPerTokenPaid[_user] = rewardPerTokenIndexStored;
     }
 
     /// @notice The function which shows available user rewards to claim.
-    /// @param user The address of the user whose rewards are to be checked.
+    /// @param _user The address of the user whose rewards are to be checked.
     /// @return The amount of rewards that the user can claim.
-    function availableRewards(address user) external view returns (uint256) {
+    function availableRewards(address _user) external view returns (uint256) {
         uint256 currentRewardPerToken = rewardPerTokenIndexStored;
 
-        if (stakedBalances[user] == 0) return rewards[user];
+        if (stakedBalances[_user] == 0) return rewards[_user];
 
         uint256 passedTime = block.timestamp - lastUpdateTime;
         uint256 totalRewardToAdd = ((totalStaked * rewardAPR * passedTime) / REWARD_APR_MULTIPLIER) / SECONDS_PER_YEAR;
         currentRewardPerToken += (totalRewardToAdd * PRECISION_FACTOR) / totalStaked;
 
         uint256 newRewards =
-            (stakedBalances[user] * (currentRewardPerToken - userRewardPerTokenPaid[user])) / PRECISION_FACTOR;
+            (stakedBalances[_user] * (currentRewardPerToken - userRewardPerTokenPaid[_user])) / PRECISION_FACTOR;
 
-        return rewards[user] + newRewards;
+        return rewards[_user] + newRewards;
     }
 
     /// @notice Allows a user to stake funds.
-    /// @param amount The amount of tokens to stake.
-    function stake(uint256 amount) external nonReentrant {
-        if (amount == 0) revert AmountMustBeGraterThenZero();
-        if (stakingToken.balanceOf(msg.sender) < amount) revert NotEnoughtFunds();
-        if (stakingToken.allowance(msg.sender, address(this)) < amount) revert TokensNotApproved();
+    /// @param _amount The amount of tokens to stake.
+    function stake(uint256 _amount) external nonReentrant {
+        if (_amount == 0) revert AmountMustBeGraterThenZero();
+        if (stakingToken.balanceOf(msg.sender) < _amount) revert NotEnoughtFunds();
+        if (stakingToken.allowance(msg.sender, address(this)) < _amount) revert TokensNotApproved();
 
         updateRewardPerToken();
         updateUserRewards(msg.sender);
 
-        stakedBalances[msg.sender] = stakedBalances[msg.sender] + amount;
-        totalStaked = totalStaked + amount;
+        stakedBalances[msg.sender] = stakedBalances[msg.sender] + _amount;
+        totalStaked = totalStaked + _amount;
+        lastBonusUpdate[msg.sender] = block.timestamp;
 
-        stakingToken.safeTransferFrom(msg.sender, address(this), amount);
+        updateGeneralUserBonusPointsWithStaking(msg.sender);
 
-        emit NewStaking(msg.sender, amount);
+        stakingToken.safeTransferFrom(msg.sender, address(this), _amount);
+
+        emit NewStaking(msg.sender, _amount);
     }
 
     /// @notice Allows a user to unstake funds.
-    /// @param amount The amount of tokens to unstake.
-    function unstake(uint256 amount) external nonReentrant {
+    /// @param _amount The amount of tokens to unstake.
+    function unstake(uint256 _amount) external nonReentrant {
         if (stakedBalances[msg.sender] == 0) revert NothingToUnstake();
-        if (amount == 0) revert AmountMustBeGraterThenZero();
-        if (amount > stakedBalances[msg.sender]) revert AmountMoreThanStaked();
+        if (_amount == 0) revert AmountMustBeGraterThenZero();
+        if (_amount > stakedBalances[msg.sender]) revert AmountMoreThanStaked();
 
         updateRewardPerToken();
         updateUserRewards(msg.sender);
 
-        totalStaked = totalStaked - amount;
-        stakedBalances[msg.sender] = stakedBalances[msg.sender] - amount;
+        totalStaked = totalStaked - _amount;
+        stakedBalances[msg.sender] = stakedBalances[msg.sender] - _amount;
 
-        stakingToken.safeTransfer(msg.sender, amount);
+        updateGeneralUserBonusPointsWithUnstaking(msg.sender);
 
-        emit NewUnstaking(msg.sender, amount);
+        stakingToken.safeTransfer(msg.sender, _amount);
+
+        emit NewUnstaking(msg.sender, _amount);
     }
 
     /// @notice Allows a user to claim rewards.
@@ -194,24 +210,73 @@ contract Staking is Ownable, ReentrancyGuard {
     }
 
     /// @notice Allows the owner to deposit reward tokens.
-    /// @param amount The amount of tokens to deposit.
-    function depositRewardTokens(uint256 amount) external onlyOwner {
-        if (amount == 0) revert DepositAmountMustBeGraterThenZero();
+    /// @param _amount The amount of tokens to deposit.
+    function depositRewardTokens(uint256 _amount) external onlyOwner {
+        if (_amount == 0) revert DepositAmountMustBeGraterThenZero();
 
-        rewardToken.safeTransferFrom(msg.sender, address(this), amount);
+        rewardToken.safeTransferFrom(msg.sender, address(this), _amount);
 
-        emit NewRewardTokensFunding(amount);
+        emit NewRewardTokensFunding(_amount);
     }
 
     /// @notice Allows the owner to update the reward APR.
-    /// @param newAPR The new reward APR.
+    /// @param _newAPR The new reward APR.
     /// @dev The reward APR must be greater than zero.
-    function updateAPR(uint256 newAPR) external onlyOwner {
-        if (newAPR == 0) revert RewardAPRMustBeGraterThenZero();
+    function updateAPR(uint256 _newAPR) external onlyOwner {
+        if (_newAPR == 0) revert RewardAPRMustBeGraterThenZero();
         updateRewardPerToken();
 
-        rewardAPR = newAPR;
+        rewardAPR = _newAPR;
 
-        emit APRUpdated(newAPR);
+        emit APRUpdated(_newAPR);
+    }
+
+    function updateGeneralUserBonusPointsWithStaking(address _user) internal {
+
+        if (stakedBalances[_user] < 5000) {
+            activityTrackerContract.setUserActivityBonusForStakedBalance(_user, 0);
+        } else if (stakedBalances[_user] < 10000) {
+            activityTrackerContract.setUserActivityBonusForStakedBalance(_user, 100);
+        } else if (stakedBalances[_user] < 20000) {
+            activityTrackerContract.setUserActivityBonusForStakedBalance(_user, 350);
+        } else if (stakedBalances[_user] < 50000) {
+            activityTrackerContract.setUserActivityBonusForStakedBalance(_user, 850);
+        } else if (stakedBalances[_user] < 100000) {
+            activityTrackerContract.setUserActivityBonusForStakedBalance(_user, 1850);
+        } else activityTrackerContract.setUserActivityBonusForStakedBalance(_user, 3850);
+    }
+
+    function updateGeneralUserBonusPointsWithUnstaking(address _user) internal {
+
+        if (stakedBalances[_user] < 5000) {
+            activityTrackerContract.setUserActivityBonusForStakedBalance(_user, 0);
+        } else if (stakedBalances[_user] < 10000) {
+            activityTrackerContract.setUserActivityBonusForStakedBalance(_user, 100);
+        } else if (stakedBalances[_user] < 20000) {
+            activityTrackerContract.setUserActivityBonusForStakedBalance(_user, 350);
+        } else if (stakedBalances[_user] < 50000) {
+            activityTrackerContract.setUserActivityBonusForStakedBalance(_user, 850);
+        } else if (stakedBalances[_user] < 100000) {
+            activityTrackerContract.setUserActivityBonusForStakedBalance(_user, 1850);
+        } else activityTrackerContract.setUserActivityBonusForStakedBalance(_user, 3850);
+    }
+
+    function updateUserPointsForTimeWithProtocol() external {
+        uint256 lastTime = lastBonusUpdate[msg.sender];
+        uint256 blocktimestamp = block.timestamp;
+
+        if (lastTime == 0) revert CallerIsNotStaker();
+
+        if (blocktimestamp - lastTime < 2_628_000) {
+            activityTrackerContract.setUserActivityBonusForTime(msg.sender, 0);
+        } else if (blocktimestamp - lastTime < 15_768_000) {
+            activityTrackerContract.setUserActivityBonusForTime(msg.sender, 50);
+        } else if (blocktimestamp - lastTime < 31_536_000) {
+            activityTrackerContract.setUserActivityBonusForTime(msg.sender, 300);
+        } else if (blocktimestamp - lastTime < 63_072_000) {
+            activityTrackerContract.setUserActivityBonusForTime(msg.sender, 850);
+        } else if (blocktimestamp - lastTime < 94_608_000) {
+            activityTrackerContract.setUserActivityBonusForTime(msg.sender, 1600);
+        } else activityTrackerContract.setUserActivityBonusForTime(msg.sender, 2600);
     }
 }
