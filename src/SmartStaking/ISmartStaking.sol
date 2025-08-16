@@ -50,6 +50,8 @@ interface ISmartStaking {
     error ActivityTrackerContractCantBeZeroAddress();
     /// @notice Reverts if the caller is not the staker.
     error CallerIsNotStaker();
+    /// @notice Reverts if the staking and reward tokens have different decimals.
+    error StakingAndRewardTokensCantHaveDifferentDecimals();
 
     /// @notice The function which shows available user rewards to claim.
     /// @param _user The address of the user whose rewards are to be checked.

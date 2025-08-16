@@ -13,7 +13,7 @@ contract ActivityTracker is IActivityTracker, Ownable {
     address public stakingContract;
 
     /// @notice Constructor to set the owner of the contract.
-    constructor() Ownable(msg.sender) {}
+    constructor() payable Ownable(msg.sender) {}
 
     /// @notice Required modifier to restrict access to functions that can only be called by the staking contract.
     /// @dev This modifier checks if the caller is the staking contract.
