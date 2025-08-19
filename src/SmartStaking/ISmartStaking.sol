@@ -29,15 +29,15 @@ interface ISmartStaking {
     /// @notice Reverts if the staking and reward tokens are the same.
     error StakingAndRewardTokensMustBeDifferent();
     /// @notice Reverts if the reward APR is zero.
-    error RewardAPRMustBeGraterThenZero();
+    error RewardAPRMustBeGreaterThanZero();
     /// @notice Reverts if the user does not have enough funds to stake.
-    error NotEnoughtFunds();
+    error NotEnoughFunds();
     /// @notice Reverts if the amount to unstake is more than the staked balance.
     error AmountMoreThanStaked();
     /// @notice Reverts if the contract does not have enough funds to send rewards.
-    error ContractHaveNotEnoughtFunds();
+    error ContractHasNotEnoughFunds();
     /// @notice Reverts if the amount is zero.
-    error AmountMustBeGraterThenZero();
+    error AmountMustBeGreaterThanZero();
     /// @notice Reverts if the tokens not approved by the user.
     error TokensNotApproved();
     /// @notice Reverts if the user does not have anything to unstake.
@@ -45,13 +45,17 @@ interface ISmartStaking {
     /// @notice Reverts if the user does not have anything to claim.
     error NothingToClaim();
     /// @notice Reverts if the amount to deposit is zero.
-    error DepositAmountMustBeGraterThenZero();
+    error DepositAmountMustBeGreaterThanZero();
     /// @notice Reverts if the activity tracker contract address is zero.
     error ActivityTrackerContractCantBeZeroAddress();
     /// @notice Reverts if the caller is not the staker.
     error CallerIsNotStaker();
     /// @notice Reverts if the staking and reward tokens have different decimals.
     error StakingAndRewardTokensCantHaveDifferentDecimals();
+    /// @notice Reverts if the decimals are too large.
+    error DecimalsTooLarge();
+    /// @notice Reverts if the user does not have any bonus points.
+    error NoBonusPoints();
 
     /// @notice The function which shows available user rewards to claim.
     /// @param _user The address of the user whose rewards are to be checked.
@@ -63,6 +67,10 @@ interface ISmartStaking {
     /// @notice Allows a user to unstake funds.
     /// @param _amount The amount of tokens to unstake.
     function unstake(uint256 _amount) external;
+    /// @notice Allows a user to check their bonus points.
+    /// @return _timeBonus The time bonus points.
+    /// @return _balanceBonus The balance bonus points.
+    function getAllActivityBonusPoints() external view returns (uint256 _timeBonus, uint256 _balanceBonus);
     /// @notice Allows a user to claim rewards for staking.
     function claim() external;
     /// @notice Allows the owner to deposit reward tokens.
@@ -75,4 +83,8 @@ interface ISmartStaking {
     /// @notice Updates the user's points for time with protocol.
     /// @dev This function calculates the user's activity bonus based on the time they are interacting with the protocol.
     function updateUserPointsForTimeWithProtocol() external;
+    /// @notice Allows the owner to pause the staking contract.
+    function pause() external;
+    /// @notice Allows the owner to unpause the staking contract.
+    function unpause() external;
 }

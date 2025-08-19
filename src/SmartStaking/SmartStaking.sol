@@ -14,7 +14,7 @@ import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IER
 /// @title Gas-effective Staking Contract with a bonus system.
 /// @author rozghon7.
 /// @notice Manages the staking of tokens and the distribution of rewards.
-contract Staking is ISmartStaking, ReentrancyGuard, Pausable, Ownable {
+contract SmartStaking is ISmartStaking, ReentrancyGuard, Pausable, Ownable {
     /// @notice SafeERC20 is used to avoid reentrancy attacks.
     using SafeERC20 for IERC20;
 
@@ -25,6 +25,8 @@ contract Staking is ISmartStaking, ReentrancyGuard, Pausable, Ownable {
     IERC20 public stakingToken;
     /// @notice Tokens that are being distributed as rewards.
     IERC20 public rewardToken;
+    /// @notice Factor to convert token amounts to the correct decimal representation.
+    uint256 public decimalsFactor;
 
     /// @notice Total amount of tokens that are being staked.
     uint256 public totalStaked;
@@ -61,7 +63,7 @@ contract Staking is ISmartStaking, ReentrancyGuard, Pausable, Ownable {
     /// @notice Mapping of user addresses to their available reward tokens to claim.
     mapping(address => uint256) public rewards;
     /// @notice Mapping of user addresses to their timestamp for time bonus counting.
-    mapping(address => uint256) public timestampForTimeBonusCouting;
+    mapping(address => uint256) public timestampForTimeBonusCounting;
     /// @notice Mapping of user addresses to their last bonus accrual update timestamp.
     mapping(address => uint256) public lastBonusAccrualUpdate;
 
@@ -76,12 +78,15 @@ contract Staking is ISmartStaking, ReentrancyGuard, Pausable, Ownable {
         if (_activityTrackerContract == address(0)) revert ActivityTrackerContractCantBeZeroAddress();
         if (_stakingToken == address(0) || _rewardToken == address(0)) revert TokenCantBeZeroAddress();
         if (_stakingToken == _rewardToken) revert StakingAndRewardTokensMustBeDifferent();
-        if (_rewardAPR == 0) revert RewardAPRMustBeGraterThenZero();
+        if (_rewardAPR == 0) revert RewardAPRMustBeGreaterThanZero();
 
         uint8 stakingDecimals = IERC20Metadata(_stakingToken).decimals();
         uint8 rewardDecimals = IERC20Metadata(_rewardToken).decimals();
 
         if (stakingDecimals != rewardDecimals) revert StakingAndRewardTokensCantHaveDifferentDecimals();
+        if (stakingDecimals > 77) revert DecimalsTooLarge();
+
+        decimalsFactor = 10 ** uint256(stakingDecimals);
 
         stakingToken = IERC20(_stakingToken);
         rewardToken = IERC20(_rewardToken);
@@ -94,8 +99,8 @@ contract Staking is ISmartStaking, ReentrancyGuard, Pausable, Ownable {
 
     /// @inheritdoc ISmartStaking
     function stake(uint256 _amount) external override nonReentrant whenNotPaused {
-        if (_amount == 0) revert AmountMustBeGraterThenZero();
-        if (stakingToken.balanceOf(msg.sender) < _amount) revert NotEnoughtFunds();
+        if (_amount == 0) revert AmountMustBeGreaterThanZero();
+        if (stakingToken.balanceOf(msg.sender) < _amount) revert NotEnoughFunds();
         if (stakingToken.allowance(msg.sender, address(this)) < _amount) revert TokensNotApproved();
 
         updateRewardPerToken();
@@ -105,8 +110,8 @@ contract Staking is ISmartStaking, ReentrancyGuard, Pausable, Ownable {
         stakedBalances[msg.sender] = stakedBalances[msg.sender] + _amount;
         totalStaked = totalStaked + _amount;
 
-        if (timestampForTimeBonusCouting[msg.sender] == 0) {
-            timestampForTimeBonusCouting[msg.sender] = block.timestamp;
+        if (timestampForTimeBonusCounting[msg.sender] == 0) {
+            timestampForTimeBonusCounting[msg.sender] = block.timestamp;
         }
 
         updateGeneralUserBonusPointsWithStaking(msg.sender);
@@ -119,7 +124,7 @@ contract Staking is ISmartStaking, ReentrancyGuard, Pausable, Ownable {
     /// @inheritdoc ISmartStaking
     function unstake(uint256 _amount) external override nonReentrant whenNotPaused {
         if (stakedBalances[msg.sender] == 0) revert NothingToUnstake();
-        if (_amount == 0) revert AmountMustBeGraterThenZero();
+        if (_amount == 0) revert AmountMustBeGreaterThanZero();
         if (_amount > stakedBalances[msg.sender]) revert AmountMoreThanStaked();
 
         updateRewardPerToken();
@@ -130,7 +135,7 @@ contract Staking is ISmartStaking, ReentrancyGuard, Pausable, Ownable {
         stakedBalances[msg.sender] = stakedBalances[msg.sender] - _amount;
 
         if (stakedBalances[msg.sender] == 0) {
-            timestampForTimeBonusCouting[msg.sender] = 0;
+            timestampForTimeBonusCounting[msg.sender] = 0;
         }
 
         updateGeneralUserBonusPointsWithUnstaking(msg.sender);
@@ -142,26 +147,30 @@ contract Staking is ISmartStaking, ReentrancyGuard, Pausable, Ownable {
 
     /// @inheritdoc ISmartStaking
     function availableRewards(address _user) external view override returns (uint256) {
-        uint256 currentRewardPerToken = rewardPerTokenIndexStored;
-
         if (stakedBalances[_user] == 0) {
             return rewards[_user];
         }
 
-        uint256 passedTime = block.timestamp - lastUpdateTime;
-        uint256 totalRewardToAdd = ((totalStaked * rewardAPR * passedTime) / REWARD_APR_MULTIPLIER) / SECONDS_PER_YEAR;
-        currentRewardPerToken += (totalRewardToAdd * PRECISION_FACTOR) / totalStaked;
+        uint256 currentRewardPerTokenIndex = rewardPerTokenIndexStored;
+        uint256 currentLastUpdateTime = lastUpdateTime;
+        
+        if (totalStaked > 0) {
+            uint256 passedTime = block.timestamp - currentLastUpdateTime;
+            uint256 rewardPerTokenPerSec = (rewardAPR * PRECISION_FACTOR) / REWARD_APR_MULTIPLIER / SECONDS_PER_YEAR;
+            currentRewardPerTokenIndex += (rewardPerTokenPerSec * passedTime);
+        }
 
         uint256 newBaseRewards =
-            (stakedBalances[_user] * (currentRewardPerToken - userRewardPerTokenPaid[_user])) / PRECISION_FACTOR;
+            (stakedBalances[_user] * (currentRewardPerTokenIndex - userRewardPerTokenPaid[_user])) / PRECISION_FACTOR;
 
         uint256 bonusBps = countingUserBonusPointsToAPR(_user);
-
         uint256 last = lastBonusAccrualUpdate[_user];
         uint256 timeForCounting = (last == 0) ? 0 : (block.timestamp - last);
-
-        uint256 pendingBonus =
-            (stakedBalances[_user] * bonusBps * timeForCounting) / REWARD_APR_MULTIPLIER / SECONDS_PER_YEAR;
+        uint256 pendingBonus = 0;
+        
+        if (bonusBps > 0 && timeForCounting > 0) {
+            pendingBonus = (stakedBalances[_user] * bonusBps * timeForCounting) / REWARD_APR_MULTIPLIER / SECONDS_PER_YEAR;
+        }
 
         return rewards[_user] + newBaseRewards + pendingBonus;
     }
@@ -170,7 +179,7 @@ contract Staking is ISmartStaking, ReentrancyGuard, Pausable, Ownable {
     function updateUserPointsForTimeWithProtocol() external override {
         applyBonusRewardsForUser(msg.sender);
 
-        uint256 lastTime = timestampForTimeBonusCouting[msg.sender];
+        uint256 lastTime = timestampForTimeBonusCounting[msg.sender];
         uint256 blocktimestamp = block.timestamp;
 
         if (lastTime == 0) revert CallerIsNotStaker();
@@ -191,6 +200,21 @@ contract Staking is ISmartStaking, ReentrancyGuard, Pausable, Ownable {
     }
 
     /// @inheritdoc ISmartStaking
+    function getAllActivityBonusPoints()
+        external
+        view
+        override
+        returns (uint256 timeBonus, uint256 balanceBonus)
+    {
+        timeBonus = activityTrackerContract.getUserActivityBonusForTime(msg.sender);
+        balanceBonus = activityTrackerContract.getUserActivityBonusForStakedBalance(msg.sender);
+
+        if (timeBonus == 0 && balanceBonus == 0) revert NoBonusPoints();
+
+        return (timeBonus, balanceBonus);
+    }
+
+    /// @inheritdoc ISmartStaking
     function claim() external override nonReentrant whenNotPaused {
         updateRewardPerToken();
         updateUserRewards(msg.sender);
@@ -199,7 +223,7 @@ contract Staking is ISmartStaking, ReentrancyGuard, Pausable, Ownable {
         uint256 rewardsToClaim = rewards[msg.sender];
 
         if (rewardsToClaim == 0) revert NothingToClaim();
-        if (rewardToken.balanceOf(address(this)) < rewardsToClaim) revert ContractHaveNotEnoughtFunds();
+        if (rewardToken.balanceOf(address(this)) < rewardsToClaim) revert ContractHasNotEnoughFunds();
 
         rewards[msg.sender] = 0;
 
@@ -212,7 +236,7 @@ contract Staking is ISmartStaking, ReentrancyGuard, Pausable, Ownable {
 
     /// @inheritdoc ISmartStaking
     function depositRewardTokens(uint256 _amount) external override onlyOwner {
-        if (_amount == 0) revert DepositAmountMustBeGraterThenZero();
+        if (_amount == 0) revert DepositAmountMustBeGreaterThanZero();
 
         rewardToken.safeTransferFrom(msg.sender, address(this), _amount);
 
@@ -221,7 +245,7 @@ contract Staking is ISmartStaking, ReentrancyGuard, Pausable, Ownable {
 
     /// @inheritdoc ISmartStaking
     function updateAPR(uint256 _newAPR) external override onlyOwner {
-        if (_newAPR == 0) revert RewardAPRMustBeGraterThenZero();
+        if (_newAPR == 0) revert RewardAPRMustBeGreaterThanZero();
         updateRewardPerToken();
 
         rewardAPR = _newAPR;
@@ -271,15 +295,17 @@ contract Staking is ISmartStaking, ReentrancyGuard, Pausable, Ownable {
     /// @notice Internal function that updates the general user bonus points for staked balance.
     /// @param _user The address of the user whose bonus points are to be updated.
     function updateGeneralUserBonusPointsWithStaking(address _user) internal {
-        if (stakedBalances[_user] < 5000) {
+        uint256 decFact = decimalsFactor;
+
+        if (stakedBalances[_user] < 5000 * decFact) {
             activityTrackerContract.setUserActivityBonusForStakedBalance(_user, 0);
-        } else if (stakedBalances[_user] < 10000) {
+        } else if (stakedBalances[_user] < 10000 * decFact) {
             activityTrackerContract.setUserActivityBonusForStakedBalance(_user, 100);
-        } else if (stakedBalances[_user] < 20000) {
+        } else if (stakedBalances[_user] < 20000 * decFact) {
             activityTrackerContract.setUserActivityBonusForStakedBalance(_user, 250);
-        } else if (stakedBalances[_user] < 50000) {
+        } else if (stakedBalances[_user] < 50000 * decFact) {
             activityTrackerContract.setUserActivityBonusForStakedBalance(_user, 500);
-        } else if (stakedBalances[_user] < 100000) {
+        } else if (stakedBalances[_user] < 100000 * decFact) {
             activityTrackerContract.setUserActivityBonusForStakedBalance(_user, 1000);
         } else {
             activityTrackerContract.setUserActivityBonusForStakedBalance(_user, 2000);
@@ -289,15 +315,17 @@ contract Staking is ISmartStaking, ReentrancyGuard, Pausable, Ownable {
     /// @notice Internal function that updates the general user bonus points after unstaking.
     /// @param _user The address of the user whose bonus points are to be updated.
     function updateGeneralUserBonusPointsWithUnstaking(address _user) internal {
-        if (stakedBalances[_user] < 5000) {
+        uint256 decFact = decimalsFactor;
+
+        if (stakedBalances[_user] < 5000 * decFact) {
             activityTrackerContract.setUserActivityBonusForStakedBalance(_user, 0);
-        } else if (stakedBalances[_user] < 10000) {
+        } else if (stakedBalances[_user] < 10000 * decFact) {
             activityTrackerContract.setUserActivityBonusForStakedBalance(_user, 100);
-        } else if (stakedBalances[_user] < 20000) {
+        } else if (stakedBalances[_user] < 20000 * decFact) {
             activityTrackerContract.setUserActivityBonusForStakedBalance(_user, 250);
-        } else if (stakedBalances[_user] < 50000) {
+        } else if (stakedBalances[_user] < 50000 * decFact) {
             activityTrackerContract.setUserActivityBonusForStakedBalance(_user, 500);
-        } else if (stakedBalances[_user] < 100000) {
+        } else if (stakedBalances[_user] < 100000 * decFact) {
             activityTrackerContract.setUserActivityBonusForStakedBalance(_user, 1000);
         } else {
             activityTrackerContract.setUserActivityBonusForStakedBalance(_user, 2000);
