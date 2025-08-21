@@ -49,6 +49,18 @@ The Smart Staking ecosystem comprises several interconnected components:
    * Implements standard ERC20 functionality with additional testing features
    * Enables comprehensive testing of all staking scenarios
 
+### **Design Decisions**
+
+The SmartStaking protocol is built with a modular design focusing on **staking mechanics and bonus systems** rather than complex price oracle integrations. This design choice prioritizes:
+
+- **Simplicity & Security**: Reduced attack vectors and complexity
+- **Flexibility**: Configurable APR parameters for different token economics
+- **Performance**: Gas-efficient operations without external price dependencies
+
+**Fixed APR Model**: The protocol uses a configurable APR system where the owner can set and adjust rates based on specific token economics and market conditions. This approach provides predictable returns while maintaining flexibility for different use cases.
+
+**Note on Production Deployment**: While the current implementation focuses on core staking mechanics, production deployments should consider integrating price oracles (e.g., Chainlink) or implementing dynamic APR adjustments based on token value fluctuations to ensure fair reward distribution across different market conditions.
+
 ## 🛠️ Development Setup
 
 To set up the project locally for development and testing:
